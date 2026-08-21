@@ -1,0 +1,1 @@
+ALTER TABLE projects ADD COLUMN clone_path VARCHAR(1000);

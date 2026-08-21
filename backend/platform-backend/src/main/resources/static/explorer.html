@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>API Explorer</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/swagger-ui/5.17.14/swagger-ui.css">
+</head>
+<body>
+<div id="swagger-ui"></div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/swagger-ui/5.17.14/swagger-ui-bundle.js"></script>
+<script>
+    const params = new URLSearchParams(window.location.search);
+    const projectId = params.get('projectId');
+
+    if (!projectId) {
+        document.getElementById('swagger-ui').innerText = 'Missing ?projectId= in URL';
+    } else {
+        window.ui = SwaggerUIBundle({
+            url: `/api/projects/${projectId}/openapi`,
+            dom_id: '#swagger-ui',
+            presets: [SwaggerUIBundle.presets.apis]
+        });
+    }
+</script>
+</body>
+</html>

@@ -1,0 +1,2 @@
+ALTER TABLE projects ADD COLUMN container_id VARCHAR(200);
+ALTER TABLE projects ADD COLUMN host_port INTEGER;

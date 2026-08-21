@@ -1,0 +1,32 @@
+# Secrets / local configuration
+application-local.properties
+**/application-local.properties
+.env
+.env.*
+!.env.example
+
+# Java / Maven
+target/
+*.class
+
+# IDE
+.idea/
+*.iml
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Runtime / generated files
+projects/
+workspace/
+
+# Archives / backups
+*.zip
+
+# Separate test repository
+sample-task-api/

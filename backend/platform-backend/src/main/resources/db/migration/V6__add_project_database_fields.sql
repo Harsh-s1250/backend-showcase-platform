@@ -1,0 +1,3 @@
+ALTER TABLE projects ADD COLUMN db_name VARCHAR(100);
+ALTER TABLE projects ADD COLUMN db_username VARCHAR(100);
+ALTER TABLE projects ADD COLUMN db_password VARCHAR(200);
