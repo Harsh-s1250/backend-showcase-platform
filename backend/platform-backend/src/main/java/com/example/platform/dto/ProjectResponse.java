@@ -10,7 +10,10 @@ public record ProjectResponse(
         String githubRepoUrl,
         String branch,
         String status,
-        Instant createdAt
+        Instant createdAt,
+        String projectType,
+        String projectTypeStatus,
+        String projectTypeReason
 ) {
     public static ProjectResponse from(Project project) {
         return new ProjectResponse(
@@ -19,7 +22,10 @@ public record ProjectResponse(
                 project.getGithubRepoUrl(),
                 project.getBranch(),
                 project.getStatus(),
-                project.getCreatedAt()
+                project.getCreatedAt(),
+                project.getProjectType(),
+                project.getProjectTypeStatus(),
+                project.getProjectTypeReason()
         );
     }
 }

@@ -5,6 +5,8 @@ import java.time.Instant;
 import java.util.UUID;
 import jakarta.persistence.ManyToOne;
 import jakarta.persistence.JoinColumn;
+import com.example.platform.analyzer.ProjectType;
+import com.example.platform.analyzer.ProjectTypeDetection;
 
 @Entity
 @Table(name = "projects")
@@ -62,6 +64,18 @@ public class Project {
     @ManyToOne
     @JoinColumn(name = "owner_id")
     private User owner;
+
+    // Stored as strings rather than @Enumerated on the detection status/type directly so a
+    // future ProjectType/DetectionStatus value can be added without an awkward migration —
+    // same philosophy as the rest of this entity (status is a plain String too).
+    @Column(name = "project_type")
+    private String projectType;
+
+    @Column(name = "project_type_status")
+    private String projectTypeStatus;
+
+    @Column(name = "project_type_reason", length = 1000)
+    private String projectTypeReason;
 
     protected Project() {} // JPA
 
@@ -135,6 +149,22 @@ public class Project {
     public User getOwner() { return owner; }
     public void setOwner(User owner) {
         this.owner = owner;
+        this.updatedAt = Instant.now();
+    }
+
+    public String getProjectType() { return projectType; }
+    public String getProjectTypeStatus() { return projectTypeStatus; }
+    public String getProjectTypeReason() { return projectTypeReason; }
+
+    /** Convenience accessor for callers that want the typed enum rather than the raw column. */
+    public ProjectType getProjectTypeEnum() {
+        return projectType != null ? ProjectType.valueOf(projectType) : null;
+    }
+
+    public void setProjectTypeDetection(ProjectTypeDetection detection) {
+        this.projectType = detection.projectType().name();
+        this.projectTypeStatus = detection.status().name();
+        this.projectTypeReason = detection.reason();
         this.updatedAt = Instant.now();
     }
 }

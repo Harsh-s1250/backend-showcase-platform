@@ -66,7 +66,10 @@ public class RunController {
                     project.getDbName(), project.getDbUsername(), project.getDbPassword());
         }
 
-        RunService.RunResult result = runService.runContainer(id, project.getDockerImageId(), dbCredentials);
+        RunService.RunResult result = runService.runContainer(
+                id, project.getDockerImageId(), dbCredentials,
+                project.getProjectTypeEnum() == com.example.platform.analyzer.ProjectType.CONSOLE_APPLICATION
+        );
 
         project.setContainerId(result.containerId());
         project.setHostPort(result.hostPort());
@@ -107,8 +110,14 @@ public class RunController {
         if (project.getContainerId() == null) {
             throw new IllegalStateException("Project has never been run. Call /run first.");
         }
+        if (project.getHostPort() == null) {
+            throw new IllegalStateException("Project has no recorded port — call /run instead of /restart.");
+        }
 
-        RunService.RunResult result = runService.restartContainer(id, project.getContainerId());
+        RunService.RunResult result = runService.restartContainer(
+                id, project.getContainerId(), project.getHostPort(),
+                project.getProjectTypeEnum() == com.example.platform.analyzer.ProjectType.CONSOLE_APPLICATION
+        );
 
         project.setStatus(result.healthy() ? "RUNNING" : "RUN_UNHEALTHY");
         projectRepository.save(project);

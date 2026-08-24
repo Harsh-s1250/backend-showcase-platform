@@ -5,16 +5,10 @@ import com.github.dockerjava.api.command.CreateContainerResponse;
 import com.github.dockerjava.api.model.ExposedPort;
 import com.github.dockerjava.api.model.HostConfig;
 import com.github.dockerjava.api.model.Ports;
-import com.github.dockerjava.core.DefaultDockerClientConfig;
-import com.github.dockerjava.core.DockerClientConfig;
-import com.github.dockerjava.core.DockerClientImpl;
-import com.github.dockerjava.httpclient5.ApacheDockerHttpClient;
 import org.springframework.stereotype.Service;
 
 import java.io.IOException;
-import java.net.InetSocketAddress;
 import java.net.ServerSocket;
-import java.net.Socket;
 import java.util.List;
 import java.util.UUID;
 
@@ -23,25 +17,29 @@ public class RunService {
 
     private static final long MEMORY_LIMIT_BYTES = 256L * 1024 * 1024; // 256MB, same as Milestone 1
     private static final long CPU_QUOTA = 50000; // 0.5 CPU, same as Milestone 1
-    private static final int HEALTH_CHECK_ATTEMPTS = 60;
+    private static final int HEALTH_CHECK_ATTEMPTS = 90; // 180s — 60 attempts (120s) was too tight;
+    // a real DB-backed Spring Boot app on this CPU limit was observed taking ~123s to boot.
     private static final int HEALTH_CHECK_DELAY_MS = 2000;
+
+    // Console apps have no HTTP server at all, so an HTTP health check would always fail
+    // and burn the full HEALTH_CHECK_ATTEMPTS window for nothing (PRD Phase F). "Healthy"
+    // for a console app just means the container didn't immediately crash — a much shorter
+    // check is enough, and a short check is honest here: we can't know a console app is
+    // "ready" for input the way we can tell an HTTP server is ready.
+    private static final int CONTAINER_STATE_CHECK_ATTEMPTS = 6; // ~6s
+    private static final int CONTAINER_STATE_CHECK_DELAY_MS = 1000;
 
     private final DockerClient dockerClient;
 
-    public RunService() {
-        DockerClientConfig config = DefaultDockerClientConfig.createDefaultConfigBuilder()
-                .withDockerHost("tcp://localhost:2375")
-                .build();
-        ApacheDockerHttpClient httpClient = new ApacheDockerHttpClient.Builder()
-                .dockerHost(config.getDockerHost())
-                .sslConfig(config.getSSLConfig())
-                .build();
-        this.dockerClient = DockerClientImpl.getInstance(config, httpClient);
+    public RunService(DockerClient dockerClient) {
+        this.dockerClient = dockerClient;
     }
 
     public record RunResult(String containerId, int hostPort, boolean healthy) {}
 
-    public RunResult runContainer(UUID projectId, String imageId, DatabaseProvisionerService.DbCredentials dbCredentials) {
+    public RunResult runContainer(UUID projectId, String imageId,
+                                    DatabaseProvisionerService.DbCredentials dbCredentials,
+                                    boolean interactive) {
         String containerName = "showcase-run-" + projectId;
 
         try {
@@ -65,6 +63,14 @@ public class RunService {
                 .withExposedPorts(containerPort)
                 .withHostConfig(hostConfig);
 
+        if (interactive) {
+            // Keeps the container's stdin file descriptor open indefinitely (like `docker
+            // run -i`) instead of it hitting EOF the instant the process starts — without
+            // this, a console app's very first Scanner.nextInt()/readLine() would throw on
+            // startup, before any browser terminal ever gets a chance to attach.
+            containerCmd.withStdinOpen(true).withTty(false);
+        }
+
         if (dbCredentials != null) {
             // host.docker.internal lets the container reach the host machine's Postgres instance —
             // Docker Desktop provides this DNS name specifically for this purpose.
@@ -78,7 +84,7 @@ public class RunService {
         CreateContainerResponse container = containerCmd.exec();
         dockerClient.startContainerCmd(container.getId()).exec();
 
-        boolean healthy = waitForHealthy(hostPort);
+        boolean healthy = interactive ? waitForContainerRunning(container.getId()) : waitForHealthy(hostPort);
 
         return new RunResult(container.getId(), hostPort, healthy);
     }
@@ -104,6 +110,30 @@ public class RunService {
             }
         }
         return false;
+    }
+
+    private boolean waitForContainerRunning(String containerId) {
+        for (int i = 0; i < CONTAINER_STATE_CHECK_ATTEMPTS; i++) {
+            if (isContainerRunning(containerId)) {
+                return true;
+            }
+            try {
+                Thread.sleep(CONTAINER_STATE_CHECK_DELAY_MS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return false;
+            }
+        }
+        return false;
+    }
+
+    public boolean isContainerRunning(String containerId) {
+        try {
+            var state = dockerClient.inspectContainerCmd(containerId).exec().getState();
+            return state != null && Boolean.TRUE.equals(state.getRunning());
+        } catch (Exception e) {
+            return false;
+        }
     }
 
     private boolean isApplicationReady(int port) {
@@ -153,18 +183,24 @@ public class RunService {
         }
     }
 
-    public RunResult restartContainer(UUID projectId, String containerId) {
-        dockerClient.startContainerCmd(containerId).exec();
+    public RunResult restartContainer(UUID projectId, String containerId, int hostPort, boolean interactive) {
+        try {
+            dockerClient.startContainerCmd(containerId).exec();
+        } catch (com.github.dockerjava.api.exception.NotModifiedException e) {
+            // Docker throws this when the container is already running — for example when
+            // a previous /run or /restart call's health check timed out on a slow-booting
+            // app (see RunService's HEALTH_CHECK_ATTEMPTS) even though the container itself
+            // came up fine. That's not a failure to restart; the container just never
+            // stopped. Fall through and re-check health instead of surfacing a 500.
+        }
 
-        // We don't know the host port here without querying Docker for it —
-        // inspect the container to read back its actual port binding.
-        var inspection = dockerClient.inspectContainerCmd(containerId).exec();
-        int hostPort = Integer.parseInt(
-                inspection.getNetworkSettings().getPorts()
-                        .getBindings().values().iterator().next()[0].getHostPortSpec()
-        );
-
-        boolean healthy = waitForHealthy(hostPort);
+        // hostPort is the same fixed binding created back at /run time (see runContainer's
+        // Ports.bind(...)) — it doesn't change across stop/start of the same container, so
+        // there's no need to ask Docker for it. (An earlier version of this method tried to
+        // read it back from the container's live NetworkSettings, which is only populated
+        // while the container is actually running — if the container had exited, that came
+        // back empty and threw a NoSuchElementException instead of a clean result.)
+        boolean healthy = interactive ? waitForContainerRunning(containerId) : waitForHealthy(hostPort);
         return new RunResult(containerId, hostPort, healthy);
     }
 }

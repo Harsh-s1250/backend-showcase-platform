@@ -100,6 +100,10 @@ public class ProjectController {
         if (result.javaVersion().value() != null) {
             project.setDetectedJavaVersion(result.javaVersion().value());
         }
+        // Always persist the project type classification, even UNKNOWN/UNSUPPORTED —
+        // silently leaving stale/absent data would violate the "never guess blindly,
+        // never hide a low-confidence result" philosophy the analyzer already follows.
+        project.setProjectTypeDetection(result.projectType());
         projectRepository.save(project);
 
         return result;
