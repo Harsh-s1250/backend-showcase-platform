@@ -1,0 +1,77 @@
+.terminal {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.terminal__toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.terminal__status {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  letter-spacing: 0.03em;
+  color: var(--muted);
+}
+
+.terminal__status--connected {
+  color: var(--accent-live);
+}
+
+.terminal__status--busy,
+.terminal__status--error {
+  color: var(--accent-warn);
+}
+
+.terminal__status--exited,
+.terminal__status--disconnected {
+  color: var(--accent-stopped);
+}
+
+.terminal__actions {
+  display: flex;
+  gap: 8px;
+}
+
+.terminal__btn {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  padding: 5px 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: 4px;
+  background: var(--surface);
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.terminal__btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.terminal__btn--primary {
+  background: var(--ink);
+  color: var(--surface);
+  border-color: var(--ink);
+}
+
+.terminal__surface {
+  border: 1px solid var(--border-strong);
+  border-radius: 4px;
+  padding: 10px;
+  background: #16202a;
+  height: 360px;
+  overflow: hidden;
+}
+
+.terminal__surface .xterm {
+  height: 100%;
+}
+
+.terminal__surface .xterm-viewport {
+  overflow-y: auto !important;
+}
