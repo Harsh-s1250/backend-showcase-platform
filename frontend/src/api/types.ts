@@ -55,3 +55,42 @@ export interface UiSchemaResult {
   reason: string | null
   resources: UiResource[]
 }
+
+// Mirrors backend/platform-backend controller/AuthController.java's /auth/me response shape.
+export interface AuthMe {
+  authenticated: boolean
+  userId?: string
+  githubUsername?: string
+  avatarUrl?: string
+}
+
+// Mirrors backend/platform-backend dto/ProjectResponse.java exactly.
+export interface ProjectResponse {
+  id: string
+  name: string
+  githubRepoUrl: string
+  branch: string
+  status: string
+  createdAt: string
+  projectType: ProjectType | null
+  projectTypeStatus: DetectionStatusValue | null
+  projectTypeReason: string | null
+  cloned: boolean
+  built: boolean
+  hostPort: number | null
+}
+
+// Mirrors backend/platform-backend dto/CreateProjectRequest.java exactly.
+export interface CreateProjectInput {
+  name: string
+  githubRepoUrl: string
+  branch?: string
+}
+
+// Mirrors backend/platform-backend controller/RunController.java's /run response Map.
+export interface RunResult {
+  containerId: string
+  hostPort: number
+  healthy: boolean
+  url: string
+}

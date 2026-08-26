@@ -18,9 +18,8 @@ export function HomePage() {
         <span className="showcase-eyebrow">Backend Showcase Platform</span>
         <h1 className="home-title">Deploy it. Share the link.</h1>
         <p className="home-copy">
-          Paste a project ID to open its showcase page. Project creation and the owner
-          dashboard live in the platform's management flow, not here — this is the public
-          entry point people land on.
+          Paste a project ID to open its showcase page — this is the public entry point people
+          land on.
         </p>
         <form className="home-form" onSubmit={handleSubmit}>
           <input
@@ -34,6 +33,9 @@ export function HomePage() {
             Open showcase
           </button>
         </form>
+        <a className="showcase-link showcase-link--muted home-dashboard-link" href="/dashboard">
+          Own a project? Go to the dashboard →
+        </a>
       </div>
     </div>
   )

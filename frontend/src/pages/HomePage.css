@@ -49,3 +49,8 @@
   outline: 2px solid var(--ink);
   outline-offset: 1px;
 }
+
+.home-dashboard-link {
+  font-size: 13px;
+  margin-top: 4px;
+}
