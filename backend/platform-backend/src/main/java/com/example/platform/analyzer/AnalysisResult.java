@@ -7,5 +7,6 @@ public record AnalysisResult(
         Detected<Boolean> openApiAvailable,
         Detected<Boolean> dockerPresent,
         Detected<String> databaseDriver,
-        ProjectTypeDetection projectType
+        ProjectTypeDetection projectType,
+        Detected<String> mainClass
 ) {}

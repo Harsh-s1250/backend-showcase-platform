@@ -18,27 +18,109 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 @Service
 public class AnalyzerService {
 
+    private static final Pattern PACKAGE_PATTERN =
+            Pattern.compile("^\\s*package\\s+([\\w.]+)\\s*;", Pattern.MULTILINE);
+
+    // Matches the Gradle "application" plugin's mainClassName/mainClass.set(...) style entries
+    // and the Spring Boot Gradle plugin's springBoot { mainClass = '...' } block. Best-effort
+    // text matching, not a real Groovy/Kotlin parser — acceptable for the "minimal Gradle
+    // support" scope: it only needs to catch an *explicit* entrypoint when one is configured.
+    private static final Pattern GRADLE_MAIN_CLASS_PATTERN =
+            Pattern.compile("mainClass(?:Name)?\\s*(?:=|\\.set\\()\\s*['\"]([\\w.]+)['\"]");
+
+    private static final Pattern GRADLE_JAVA_VERSION_PATTERN =
+            Pattern.compile("(?:sourceCompatibility|targetCompatibility)\\s*=?\\s*['\"]?(?:JavaVersion\\.VERSION_)?(\\d+(?:\\.\\d+)?)['\"]?");
+
     public AnalysisResult analyze(String clonePath) {
         Path repoRoot = Path.of(clonePath);
         File pomFile = repoRoot.resolve("pom.xml").toFile();
+        File gradleGroovyFile = repoRoot.resolve("build.gradle").toFile();
+        File gradleKotlinFile = repoRoot.resolve("build.gradle.kts").toFile();
 
-        if (!pomFile.exists()) {
-            // No pom.xml at all — we genuinely don't know anything about this project yet.
+        if (pomFile.exists()) {
+            return analyzeMaven(repoRoot, pomFile);
+        }
+        if (gradleGroovyFile.exists() || gradleKotlinFile.exists()) {
+            File gradleFile = gradleGroovyFile.exists() ? gradleGroovyFile : gradleKotlinFile;
+            return analyzeGradle(repoRoot, gradleFile);
+        }
+
+        // No recognized build descriptor. Rather than giving up immediately (as before), check
+        // whether this is simply a plain, build-tool-free Java project — a single .java file (or
+        // a small handful) with a main() method is a completely valid console app per the PRD's
+        // own example (§13), and shouldn't be classified UNKNOWN just because there's no pom.xml.
+        JavaSourceSignals sourceSignals = scanJavaSources(repoRoot);
+        List<String> mainClassCandidates = findMainClassCandidates(repoRoot);
+
+        if (!sourceSignals.hasAnyJavaFiles()) {
             return new AnalysisResult(
                     Detected.unknown(), Detected.unknown(), Detected.unknown(),
                     Detected.unknown(), detectDocker(repoRoot), Detected.unknown(),
-                    ProjectTypeDetection.unknown("No pom.xml found — cannot classify a project without build metadata.")
+                    ProjectTypeDetection.unknown("No pom.xml, build.gradle, or .java files found — cannot classify this repository."),
+                    Detected.unknown()
             );
         }
 
+        return new AnalysisResult(
+                Detected.detected("Plain Java"),
+                Detected.unknown(),
+                Detected.unknown(),
+                Detected.unknown(),
+                detectDocker(repoRoot),
+                detectDatabaseDriverFromSource(repoRoot),
+                detectProjectType(List.of(), Detected.unknown(), sourceSignals),
+                detectMainClass(null, mainClassCandidates)
+        );
+    }
+
+    /**
+     * The plain-Java path has no dependency declarations to inspect (that's the whole point —
+     * no build tool), so this looks for the JDBC URL scheme string literal directly in source
+     * (e.g. "jdbc:mysql://...", "jdbc:postgresql://..."). This is enough of a signal to (a) decide
+     * whether to provision a database at all, and (b) which one — see RunController and
+     * DockerfileGenerator's plain-Java driver-jar step, both of which need to know which JDBC
+     * driver to make available since plain javac can't resolve it from a dependency.
+     */
+    private Detected<String> detectDatabaseDriverFromSource(Path repoRoot) {
+        boolean[] hasMysql = {false};
+        boolean[] hasPostgres = {false};
+
+        try (var paths = Files.walk(repoRoot)) {
+            paths.filter(Files::isRegularFile)
+                    .filter(p -> p.toString().endsWith(".java"))
+                    .filter(p -> !p.toString().contains(File.separator + ".git" + File.separator))
+                    .forEach(p -> {
+                        String content;
+                        try {
+                            content = Files.readString(p);
+                        } catch (IOException e) {
+                            return;
+                        }
+                        if (content.contains("jdbc:mysql")) hasMysql[0] = true;
+                        if (content.contains("jdbc:postgresql")) hasPostgres[0] = true;
+                    });
+        } catch (IOException e) {
+            // Best-effort — no signal found if the tree can't be walked.
+        }
+
+        if (hasMysql[0]) return Detected.detected("MySQL");
+        if (hasPostgres[0]) return Detected.detected("PostgreSQL");
+        return Detected.unknown();
+    }
+
+    private AnalysisResult analyzeMaven(Path repoRoot, File pomFile) {
         Document pom = parsePom(pomFile);
         List<String> dependencyArtifactIds = extractDependencyArtifactIds(pom);
         Detected<String> framework = detectFramework(pom, dependencyArtifactIds);
         JavaSourceSignals sourceSignals = scanJavaSources(repoRoot);
+        List<String> mainClassCandidates = findMainClassCandidates(repoRoot);
+        String explicitMainClass = firstElementTextByTagName(pom, "mainClass");
 
         return new AnalysisResult(
                 Detected.detected("Maven"),
@@ -47,7 +129,73 @@ public class AnalyzerService {
                 detectOpenApi(dependencyArtifactIds),
                 detectDocker(repoRoot),
                 detectDatabaseDriver(dependencyArtifactIds),
-                detectProjectType(dependencyArtifactIds, framework, sourceSignals)
+                detectProjectType(dependencyArtifactIds, framework, sourceSignals),
+                detectMainClass(explicitMainClass, mainClassCandidates)
+        );
+    }
+
+    /**
+     * Deliberately minimal: Gradle build files are Groovy or Kotlin code, not a structured
+     * format like pom.xml's XML, so we don't attempt a real parse. This is enough to (a) stop
+     * misclassifying Gradle projects as "no pom.xml -> UNKNOWN" and (b) generate a working
+     * Dockerfile for them. Dependency-driven signals (Spring Boot framework, web dependency,
+     * OpenAPI, DB driver) are best-effort text matches and may miss unconventional build files;
+     * the REST-vs-console classification itself does NOT depend on this, since it's driven by
+     * scanning .java sources directly (see detectProjectType).
+     */
+    private AnalysisResult analyzeGradle(Path repoRoot, File gradleFile) {
+        String gradleText;
+        try {
+            gradleText = Files.readString(gradleFile.toPath());
+        } catch (IOException e) {
+            gradleText = "";
+        }
+
+        JavaSourceSignals sourceSignals = scanJavaSources(repoRoot);
+        List<String> mainClassCandidates = findMainClassCandidates(repoRoot);
+
+        boolean hasSpringBootPlugin = gradleText.contains("org.springframework.boot");
+        Detected<String> framework = hasSpringBootPlugin ? Detected.detected("Spring Boot") : Detected.unknown();
+
+        boolean hasWebDependency = gradleText.contains("spring-boot-starter-web");
+        // Reuse the same dependency-list-shaped input the Maven path uses, so
+        // detectProjectType's "isSpringBoot && hasWebDependency" branch works identically.
+        List<String> pseudoDependencyIds = new ArrayList<>();
+        if (hasWebDependency) pseudoDependencyIds.add("spring-boot-starter-web");
+
+        boolean hasOpenApi = gradleText.contains("springdoc") || gradleText.contains("swagger");
+        Detected<Boolean> openApiAvailable = hasOpenApi ? Detected.detected(true) : Detected.unknown();
+
+        Detected<String> databaseDriver;
+        if (gradleText.contains("postgresql")) {
+            databaseDriver = Detected.detected("PostgreSQL");
+        } else if (gradleText.contains("mysql")) {
+            databaseDriver = Detected.detected("MySQL");
+        } else {
+            databaseDriver = Detected.unknown();
+        }
+
+        Detected<String> javaVersion = Detected.unknown();
+        Matcher versionMatcher = GRADLE_JAVA_VERSION_PATTERN.matcher(gradleText);
+        if (versionMatcher.find()) {
+            javaVersion = Detected.inferred(versionMatcher.group(1));
+        }
+
+        String explicitMainClass = null;
+        Matcher mainClassMatcher = GRADLE_MAIN_CLASS_PATTERN.matcher(gradleText);
+        if (mainClassMatcher.find()) {
+            explicitMainClass = mainClassMatcher.group(1);
+        }
+
+        return new AnalysisResult(
+                Detected.detected("Gradle"),
+                framework,
+                javaVersion,
+                openApiAvailable,
+                detectDocker(repoRoot),
+                databaseDriver,
+                detectProjectType(pseudoDependencyIds, framework, sourceSignals),
+                detectMainClass(explicitMainClass, mainClassCandidates)
         );
     }
 
@@ -55,13 +203,15 @@ public class AnalyzerService {
      * Signals pulled directly out of the repository's .java source files — the analyzer
      * philosophy (PRD §6/§23) is to inspect the repo, not just infer from pom.xml
      * dependencies, so a Spring Boot project without a controller isn't blindly assumed
-     * to be a REST application.
+     * to be a REST application. Also runs identically regardless of build tool (or lack
+     * of one), which is what lets plain-Java and Gradle projects get classified at all.
      */
     private record JavaSourceSignals(
             boolean hasRestControllerAnnotation,
             boolean hasControllerAnnotation,
             boolean hasMainMethod,
-            boolean hasInteractiveStdIo
+            boolean hasInteractiveStdIo,
+            boolean hasAnyJavaFiles
     ) {}
 
     private JavaSourceSignals scanJavaSources(Path repoRoot) {
@@ -69,13 +219,16 @@ public class AnalyzerService {
         boolean[] controller = {false};
         boolean[] mainMethod = {false};
         boolean[] interactiveIo = {false};
+        boolean[] anyJavaFiles = {false};
 
         try (var paths = Files.walk(repoRoot)) {
             paths.filter(Files::isRegularFile)
                     .filter(p -> p.toString().endsWith(".java"))
                     .filter(p -> !p.toString().contains(File.separator + "target" + File.separator))
+                    .filter(p -> !p.toString().contains(File.separator + "build" + File.separator))
                     .filter(p -> !p.toString().contains(File.separator + ".git" + File.separator))
                     .forEach(p -> {
+                        anyJavaFiles[0] = true;
                         String content;
                         try {
                             content = Files.readString(p);
@@ -94,7 +247,67 @@ public class AnalyzerService {
             // Best-effort — if we can't walk the tree, we simply found no signals.
         }
 
-        return new JavaSourceSignals(restController[0], controller[0], mainMethod[0], interactiveIo[0]);
+        return new JavaSourceSignals(restController[0], controller[0], mainMethod[0], interactiveIo[0], anyJavaFiles[0]);
+    }
+
+    /**
+     * Finds every class in the repo that declares {@code public static void main}, returning
+     * each as a fully-qualified class name (package + filename, per Java's requirement that a
+     * public top-level class's name match its file name). Used to pick a Docker ENTRYPOINT for
+     * console apps that don't produce a jar with a manifest-declared Main-Class.
+     */
+    private List<String> findMainClassCandidates(Path repoRoot) {
+        List<String> candidates = new ArrayList<>();
+
+        try (var paths = Files.walk(repoRoot)) {
+            paths.filter(Files::isRegularFile)
+                    .filter(p -> p.toString().endsWith(".java"))
+                    .filter(p -> !p.toString().contains(File.separator + "target" + File.separator))
+                    .filter(p -> !p.toString().contains(File.separator + "build" + File.separator))
+                    .filter(p -> !p.toString().contains(File.separator + ".git" + File.separator))
+                    .forEach(p -> {
+                        String content;
+                        try {
+                            content = Files.readString(p);
+                        } catch (IOException e) {
+                            return;
+                        }
+                        if (!content.contains("public static void main")) return;
+
+                        String fileName = p.getFileName().toString();
+                        String className = fileName.substring(0, fileName.length() - ".java".length());
+
+                        Matcher packageMatcher = PACKAGE_PATTERN.matcher(content);
+                        String fqcn = packageMatcher.find()
+                                ? packageMatcher.group(1) + "." + className
+                                : className;
+
+                        candidates.add(fqcn);
+                    });
+        } catch (IOException e) {
+            // Best-effort — no candidates found if the tree can't be walked.
+        }
+
+        return candidates;
+    }
+
+    /**
+     * Resolves which class to actually run. Prefers an explicit entrypoint the build file
+     * already configured (Maven's <mainClass>, Gradle's mainClass/mainClassName) since that's
+     * an authoritative signal, not a guess. Falls back to source scanning only when exactly one
+     * candidate exists — with two or more candidates and nothing explicit to disambiguate them,
+     * this deliberately returns UNKNOWN rather than silently picking one, matching the rest of
+     * this class's "never guess blindly" approach. Callers (BuildService) must treat an UNKNOWN
+     * main class on a console app as a hard stop, not a silent fallback to "java -jar app.jar".
+     */
+    private Detected<String> detectMainClass(String explicitMainClass, List<String> candidates) {
+        if (explicitMainClass != null && !explicitMainClass.isBlank()) {
+            return Detected.detected(explicitMainClass);
+        }
+        if (candidates.size() == 1) {
+            return Detected.detected(candidates.get(0));
+        }
+        return Detected.unknown();
     }
 
     private ProjectTypeDetection detectProjectType(List<String> dependencyArtifactIds,
@@ -223,6 +436,15 @@ public class AnalyzerService {
             }
         }
         return Optional.empty();
+    }
+
+    /** Finds the first element anywhere in the document with the given tag name, e.g. the
+     * <mainClass> configured inside a maven-jar-plugin, shade-plugin, assembly-plugin, or
+     * spring-boot-maven-plugin <configuration> block — wherever it happens to live. */
+    private String firstElementTextByTagName(Document pom, String tagName) {
+        NodeList matches = pom.getElementsByTagName(tagName);
+        if (matches.getLength() == 0) return null;
+        return matches.item(0).getTextContent().trim();
     }
 
     private String childText(Element parent, String tagName) {

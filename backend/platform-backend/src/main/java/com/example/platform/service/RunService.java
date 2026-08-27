@@ -72,12 +72,29 @@ public class RunService {
         }
 
         if (dbCredentials != null) {
-            // host.docker.internal lets the container reach the host machine's Postgres instance —
-            // Docker Desktop provides this DNS name specifically for this purpose.
+            // host.docker.internal lets the container reach the host machine's DB server —
+            // Docker Desktop provides this DNS name specifically for this purpose. Subprotocol
+            // and port come from the credentials themselves (set by DatabaseProvisionerService),
+            // so this works identically for Postgres and MySQL without a type check here.
+            String jdbcSubprotocol = "MySQL".equals(dbCredentials.type()) ? "mysql" : "postgresql";
+            String jdbcUrl = "jdbc:" + jdbcSubprotocol + "://host.docker.internal:"
+                    + dbCredentials.port() + "/" + dbCredentials.dbName();
+
             containerCmd.withEnv(List.of(
-                    "SPRING_DATASOURCE_URL=jdbc:postgresql://host.docker.internal:5432/" + dbCredentials.dbName(),
+                    // Spring Boot auto-binds these — works for any Spring Data JDBC/JPA project.
+                    "SPRING_DATASOURCE_URL=" + jdbcUrl,
                     "SPRING_DATASOURCE_USERNAME=" + dbCredentials.username(),
-                    "SPRING_DATASOURCE_PASSWORD=" + dbCredentials.password()
+                    "SPRING_DATASOURCE_PASSWORD=" + dbCredentials.password(),
+                    // Generic aliases for anything that ISN'T Spring (e.g. a plain-Java console
+                    // app using raw JDBC) — Spring auto-binding doesn't apply there, so the app's
+                    // own code has to read these itself via System.getenv(...). Providing both
+                    // sets costs nothing and covers both cases without needing to know in advance
+                    // which one a given project actually is.
+                    "DB_HOST=host.docker.internal",
+                    "DB_PORT=" + dbCredentials.port(),
+                    "DB_NAME=" + dbCredentials.dbName(),
+                    "DB_USERNAME=" + dbCredentials.username(),
+                    "DB_PASSWORD=" + dbCredentials.password()
             ));
         }
 

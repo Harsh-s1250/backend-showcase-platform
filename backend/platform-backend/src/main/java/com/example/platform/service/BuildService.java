@@ -44,15 +44,34 @@ public class BuildService {
     }
 
     public SseEmitter buildProjectStreaming(UUID projectId, String clonePath, String javaVersion,
+                                            String buildTool, String mainClass, boolean isConsoleApp,
+                                            boolean isSpringBoot, String databaseDriver,
                                             java.util.function.Consumer<String> onSuccess) {
         SseEmitter emitter = new SseEmitter(BUILD_TIMEOUT.toMillis());
         StringBuilder capturedOutput = new StringBuilder();
+
+        // Fail fast, before touching Docker at all: a console app with no build tool (plain
+        // Java) has no jar/manifest to fall back on, so we MUST know the exact class to run.
+        // Surfacing this clearly here (as a build failure with a real reason) is much better
+        // than generating a Dockerfile that builds fine and then fails at container startup
+        // with a cryptic "no main manifest attribute" — see handoff's documented rough edge.
+        if (isConsoleApp && "Plain Java".equals(buildTool) && (mainClass == null || mainClass.isBlank())) {
+            capturedOutput.append("ERROR: Cannot build this console application — no single main() class ")
+                    .append("could be determined and no build tool is present to configure one explicitly. ")
+                    .append("Add a pom.xml/build.gradle with an explicit entrypoint, or ensure exactly one ")
+                    .append("class in the repository declares `public static void main`.\n");
+            deploymentLogRepository.save(new DeploymentLog(projectId, "BUILD", capturedOutput.toString(), false));
+            emitter.completeWithError(new IllegalStateException(capturedOutput.toString()));
+            return emitter;
+        }
 
         Executors.newSingleThreadExecutor().submit(() -> {
             try {
                 Path repoPath = Path.of(clonePath);
                 Path dockerfilePath = repoPath.resolve("Dockerfile");
-                Files.writeString(dockerfilePath, DockerfileGenerator.generate(javaVersion));
+                Files.writeString(dockerfilePath,
+                        DockerfileGenerator.generate(buildTool, javaVersion, mainClass, isConsoleApp,
+                                isSpringBoot, databaseDriver));
 
                 String imageTag = "showcase-project-" + projectId;
 

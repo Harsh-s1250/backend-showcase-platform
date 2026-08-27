@@ -45,10 +45,18 @@ public class BuildController {
         project.setStatus("BUILDING");
         projectRepository.save(project);
 
+        boolean isConsoleApp = project.getProjectTypeEnum() == com.example.platform.analyzer.ProjectType.CONSOLE_APPLICATION;
+        boolean isSpringBoot = "Spring Boot".equals(project.getDetectedFramework());
+
         return buildService.buildProjectStreaming(
                 id,
                 project.getClonePath(),
                 project.getDetectedJavaVersion(),
+                project.getDetectedBuildTool(),
+                project.getMainClass(),
+                isConsoleApp,
+                isSpringBoot,
+                project.getDetectedDatabaseDriver(),
                 imageId -> {
                     project.setDockerImageId(imageId);
                     project.setStatus("BUILT");

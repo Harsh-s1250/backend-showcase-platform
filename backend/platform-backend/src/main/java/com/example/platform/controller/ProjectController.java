@@ -104,6 +104,20 @@ public class ProjectController {
         // silently leaving stale/absent data would violate the "never guess blindly,
         // never hide a low-confidence result" philosophy the analyzer already follows.
         project.setProjectTypeDetection(result.projectType());
+
+        // Persisted so RunController can build the correct Docker ENTRYPOINT for console apps
+        // (see DockerfileGenerator) without re-running analysis at build/run time.
+        project.setMainClass(result.mainClass().value());
+
+        // Persisted so RunController can decide whether to provision a database at /run time
+        // (see the conditional check there) instead of always provisioning one regardless of
+        // whether the project actually uses a database.
+        project.setDetectedDatabaseDriver(result.databaseDriver().value());
+
+        // Persisted so the build step knows whether it's safe to patch a console app's jar
+        // manifest with a detected main class (never safe for Spring Boot — see DockerfileGenerator).
+        project.setDetectedFramework(result.framework().value());
+
         projectRepository.save(project);
 
         return result;

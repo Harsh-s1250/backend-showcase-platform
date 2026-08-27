@@ -77,6 +77,15 @@ public class Project {
     @Column(name = "project_type_reason", length = 1000)
     private String projectTypeReason;
 
+    @Column(name = "main_class")
+    private String mainClass;
+
+    @Column(name = "detected_database_driver")
+    private String detectedDatabaseDriver;
+
+    @Column(name = "detected_framework")
+    private String detectedFramework;
+
     protected Project() {} // JPA
 
     public Project(String name, String githubRepoUrl, String branch) {
@@ -165,6 +174,24 @@ public class Project {
         this.projectType = detection.projectType().name();
         this.projectTypeStatus = detection.status().name();
         this.projectTypeReason = detection.reason();
+        this.updatedAt = Instant.now();
+    }
+
+    public String getMainClass() { return mainClass; }
+    public void setMainClass(String mainClass) {
+        this.mainClass = mainClass;
+        this.updatedAt = Instant.now();
+    }
+
+    public String getDetectedDatabaseDriver() { return detectedDatabaseDriver; }
+    public void setDetectedDatabaseDriver(String detectedDatabaseDriver) {
+        this.detectedDatabaseDriver = detectedDatabaseDriver;
+        this.updatedAt = Instant.now();
+    }
+
+    public String getDetectedFramework() { return detectedFramework; }
+    public void setDetectedFramework(String detectedFramework) {
+        this.detectedFramework = detectedFramework;
         this.updatedAt = Instant.now();
     }
 }

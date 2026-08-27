@@ -54,16 +54,38 @@ public class RunController {
 
         DatabaseProvisionerService.DbCredentials dbCredentials = null;
 
-        // Only provision a database if this project doesn't already have one AND needs one.
-        if (project.getDbName() == null) {
-            // For now we provision unconditionally per project; a future refinement could check
-            // the analyzer's databaseDriver result and skip provisioning for projects that don't need it.
-            dbCredentials = databaseProvisionerService.provisionDatabase(id);
-            project.setDbCredentials(dbCredentials.dbName(), dbCredentials.username(), dbCredentials.password());
-            projectRepository.save(project);
-        } else {
-            dbCredentials = new DatabaseProvisionerService.DbCredentials(
-                    project.getDbName(), project.getDbUsername(), project.getDbPassword());
+        // Provision a database only if this project actually needs one (per the analyzer's
+        // detected database driver) — previously this ran unconditionally for every project,
+        // leaving an unused Postgres database behind for projects that never touch a DB.
+        // A project analyzed before this change (detectedDatabaseDriver == null, i.e. it was
+        // never recorded) is treated the same as "driver unknown" — no provisioning, not a
+        // silent guess in either direction.
+        String detectedDriver = project.getDetectedDatabaseDriver();
+        boolean needsDatabase = detectedDriver != null;
+        boolean isMySql = "MySQL".equals(detectedDriver);
+
+        if (needsDatabase) {
+            if (project.getDbName() == null) {
+                dbCredentials = isMySql
+                        ? databaseProvisionerService.provisionMySqlDatabase(id)
+                        : databaseProvisionerService.provisionPostgresDatabase(id);
+                project.setDbCredentials(dbCredentials.dbName(), dbCredentials.username(), dbCredentials.password());
+                projectRepository.save(project);
+
+                // Only on first-ever provisioning for this project — running this again on a
+                // later /run against the same (already-provisioned) database would try to
+                // CREATE TABLE against tables that already exist and fail. See
+                // DatabaseProvisionerService.runSchemaScriptIfPresent for the schema.sql
+                // convention and why this is a no-op when the repo doesn't have one.
+                databaseProvisionerService.runSchemaScriptIfPresent(project.getClonePath(), dbCredentials);
+            } else {
+                // Re-derive type/port from the persisted detectedDatabaseDriver rather than
+                // storing them separately — detectedDatabaseDriver only changes on re-analyze,
+                // so it's already the stable source of truth for "which kind of DB is this."
+                dbCredentials = new DatabaseProvisionerService.DbCredentials(
+                        project.getDbName(), project.getDbUsername(), project.getDbPassword(),
+                        detectedDriver, isMySql ? 3306 : 5432);
+            }
         }
 
         RunService.RunResult result = runService.runContainer(
@@ -145,7 +167,8 @@ public class RunController {
         }
 
         runService.removeContainer(project.getContainerId());
-        databaseProvisionerService.deprovisionDatabase(project.getDbName(), project.getDbUsername());
+        databaseProvisionerService.deprovisionDatabase(
+                project.getDbName(), project.getDbUsername(), project.getDetectedDatabaseDriver());
         repositoryService.deleteWorkspace(id);
 
         projectRepository.delete(project);
