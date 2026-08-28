@@ -1,6 +1,7 @@
 package com.example.platform.service;
 
 import com.example.platform.build.DockerfileGenerator;
+import com.example.platform.build.BuildLogTranslator;
 import com.github.dockerjava.api.DockerClient;
 import com.github.dockerjava.api.async.ResultCallback;
 import com.github.dockerjava.api.command.BuildImageResultCallback;
@@ -77,14 +78,27 @@ public class BuildService {
 
                 emitter.send(SseEmitter.event().name("status").data("Starting build..."));
 
+                BuildLogTranslator translator = new BuildLogTranslator();
+
                 BuildImageResultCallback callback = new BuildImageResultCallback() {
                     @Override
                     public void onNext(BuildResponseItem item) {
                         String stream = item.getStream();
                         if (stream != null && !stream.isBlank()) {
-                            capturedOutput.append(stream.trim()).append("\n");
+                            String trimmed = stream.trim();
+                            capturedOutput.append(trimmed).append("\n");
                             try {
-                                emitter.send(SseEmitter.event().name("log").data(stream.trim()));
+                                // Raw line — always sent, unchanged. Backs the dashboard's
+                                // "show raw log" toggle.
+                                emitter.send(SseEmitter.event().name("log").data(trimmed));
+
+                                // Friendly translation — sent alongside, only when this line is a
+                                // recognizable Dockerfile instruction boundary. This is what the
+                                // dashboard shows by default; see BuildLogTranslator.
+                                String friendly = translator.translate(trimmed);
+                                if (friendly != null) {
+                                    emitter.send(SseEmitter.event().name("status").data(friendly));
+                                }
                             } catch (IOException e) {
                                 this.onError(e);
                             }
@@ -105,6 +119,7 @@ public class BuildService {
 
                 onSuccess.accept(imageId);
 
+                emitter.send(SseEmitter.event().name("status").data("Build image created successfully!"));
                 emitter.send(SseEmitter.event().name("complete").data(imageId));
                 emitter.complete();
 

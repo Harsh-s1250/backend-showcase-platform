@@ -63,6 +63,10 @@ public class RunController {
         String detectedDriver = project.getDetectedDatabaseDriver();
         boolean needsDatabase = detectedDriver != null;
         boolean isMySql = "MySQL".equals(detectedDriver);
+        // Only ever true right after a fresh CREATE DATABASE with no schema.sql found — never on
+        // a later /run against an already-provisioned database, so the warning doesn't repeat
+        // forever once the person has already seen it once for this project.
+        boolean freshlyProvisionedWithoutSchema = false;
 
         if (needsDatabase) {
             if (project.getDbName() == null) {
@@ -77,7 +81,8 @@ public class RunController {
                 // CREATE TABLE against tables that already exist and fail. See
                 // DatabaseProvisionerService.runSchemaScriptIfPresent for the schema.sql
                 // convention and why this is a no-op when the repo doesn't have one.
-                databaseProvisionerService.runSchemaScriptIfPresent(project.getClonePath(), dbCredentials);
+                boolean schemaExecuted = databaseProvisionerService.runSchemaScriptIfPresent(project.getClonePath(), dbCredentials);
+                freshlyProvisionedWithoutSchema = !schemaExecuted;
             } else {
                 // Re-derive type/port from the persisted detectedDatabaseDriver rather than
                 // storing them separately — detectedDatabaseDriver only changes on re-analyze,
@@ -98,12 +103,23 @@ public class RunController {
         project.setStatus(result.healthy() ? "RUNNING" : "RUN_UNHEALTHY");
         projectRepository.save(project);
 
-        return Map.of(
-                "containerId", result.containerId(),
-                "hostPort", result.hostPort(),
-                "healthy", result.healthy(),
-                "url", "http://localhost:" + result.hostPort()
-        );
+        // LinkedHashMap, not Map.of(...) — Map.of disallows null values and we only want
+        // "schemaWarning" present at all when it's actually relevant, not present-with-null.
+        Map<String, Object> response = new java.util.LinkedHashMap<>();
+        response.put("containerId", result.containerId());
+        response.put("hostPort", result.hostPort());
+        response.put("healthy", result.healthy());
+        response.put("url", "http://localhost:" + result.hostPort());
+
+        if (freshlyProvisionedWithoutSchema) {
+            response.put("schemaWarning",
+                    "A " + detectedDriver + " database was provisioned for this project, but no schema.sql "
+                            + "was found in the repository, so no tables were created. If the application "
+                            + "expects tables to already exist, add a schema.sql file to the repo root (or "
+                            + "db/, sql/, database/) and re-run, or create the tables manually.");
+        }
+
+        return response;
     }
 
     @PostMapping("/{id}/stop")

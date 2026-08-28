@@ -23,7 +23,8 @@ type AuthState = { phase: 'loading' } | { phase: 'anonymous' } | { phase: 'authe
 
 type BuildStream = {
   projectId: string
-  lines: string[]
+  statusLines: string[]
+  logLines: string[]
   phase: 'streaming' | 'done' | 'error'
   errorMessage: string | null
 }
@@ -37,6 +38,7 @@ export function DashboardPage() {
   const [confirmingDeleteId, setConfirmingDeleteId] = useState<string | null>(null)
   const [deleteInput, setDeleteInput] = useState('')
   const [build, setBuild] = useState<BuildStream | null>(null)
+  const [showRawBuildLog, setShowRawBuildLog] = useState(false)
   const navigate = useNavigate()
 
   useEffect(() => {
@@ -90,10 +92,11 @@ export function DashboardPage() {
 
   function handleBuild(id: string) {
     setActionError(null)
-    setBuild({ projectId: id, lines: [], phase: 'streaming', errorMessage: null })
+    setShowRawBuildLog(false)
+    setBuild({ projectId: id, statusLines: [], logLines: [], phase: 'streaming', errorMessage: null })
     streamBuildLog(id, {
-      onStatus: (message) => setBuild((b) => (b && b.projectId === id ? { ...b, lines: [...b.lines, message] } : b)),
-      onLog: (line) => setBuild((b) => (b && b.projectId === id ? { ...b, lines: [...b.lines, line] } : b)),
+      onStatus: (message) => setBuild((b) => (b && b.projectId === id ? { ...b, statusLines: [...b.statusLines, message] } : b)),
+      onLog: (line) => setBuild((b) => (b && b.projectId === id ? { ...b, logLines: [...b.logLines, line] } : b)),
       onComplete: () => {
         setBuild((b) => (b && b.projectId === id ? { ...b, phase: 'done' } : b))
         loadProjects()
@@ -106,7 +109,20 @@ export function DashboardPage() {
   }
 
   function handleRun(id: string) {
-    runAction(id, 'Run', () => runProject(id), () => navigate(`/showcase?projectId=${id}`))
+    setBusy({ id, label: 'Run' })
+    setActionError(null)
+    runProject(id)
+      .then((result) => {
+        loadProjects()
+        // Passed via navigation state (not a query param or refetch) since it's a one-time
+        // response from this specific /run call, not something the showcase page's normal
+        // data-fetch would otherwise have access to.
+        navigate(`/showcase?projectId=${id}`, { state: { schemaWarning: result.schemaWarning ?? null } })
+      })
+      .catch((err) => {
+        setActionError(err instanceof ApiError ? err.message : 'Run failed.')
+      })
+      .finally(() => setBusy(null))
   }
 
   function handleStop(id: string) {
@@ -197,6 +213,8 @@ export function DashboardPage() {
                 onConfirmDelete={() => handleDeleteConfirmed(project.id)}
                 buildStream={build?.projectId === project.id ? build : null}
                 onCloseBuild={() => setBuild(null)}
+                showRawBuildLog={showRawBuildLog}
+                onToggleRawBuildLog={() => setShowRawBuildLog((v) => !v)}
               />
             ))}
           </ul>
@@ -305,6 +323,8 @@ interface ProjectRowProps {
   onConfirmDelete: () => void
   buildStream: BuildStream | null
   onCloseBuild: () => void
+  showRawBuildLog: boolean
+  onToggleRawBuildLog: () => void
 }
 
 function ProjectRow({
@@ -324,6 +344,8 @@ function ProjectRow({
   onConfirmDelete,
   buildStream,
   onCloseBuild,
+  showRawBuildLog,
+  onToggleRawBuildLog,
 }: ProjectRowProps) {
   const isRunning = project.status === 'RUNNING'
   const isBusy = busy !== null
@@ -422,14 +444,19 @@ function ProjectRow({
               {buildStream.phase === 'done' && 'Build complete'}
               {buildStream.phase === 'error' && 'Build failed'}
             </span>
-            {buildStream.phase !== 'streaming' && (
-              <button className="showcase-btn showcase-btn--secondary" onClick={onCloseBuild}>
-                Close
+            <div style={{ display: 'flex', gap: '0.5rem' }}>
+              <button className="showcase-btn showcase-btn--secondary" onClick={onToggleRawBuildLog}>
+                {showRawBuildLog ? 'Show summary' : 'Show raw log'}
               </button>
-            )}
+              {buildStream.phase !== 'streaming' && (
+                <button className="showcase-btn showcase-btn--secondary" onClick={onCloseBuild}>
+                  Close
+                </button>
+              )}
+            </div>
           </div>
           <pre className="dashboard-build-log__body">
-            {buildStream.lines.join('\n')}
+            {(showRawBuildLog ? buildStream.logLines : buildStream.statusLines).join('\n')}
             {buildStream.phase === 'error' && buildStream.errorMessage ? `\n${buildStream.errorMessage}` : ''}
           </pre>
         </div>

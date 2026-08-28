@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { useSearchParams } from 'react-router-dom'
+import { useLocation, useSearchParams } from 'react-router-dom'
 import { fetchExperience, fetchShowcase, fetchUiSchema } from '../api/client'
 import type { ExperienceInfo, ShowcaseInfo, UiSchemaResult } from '../api/types'
 import { StatusLine } from '../components/StatusLine'
@@ -24,6 +24,14 @@ export function ShowcasePage() {
   const [params] = useSearchParams()
   const projectId = params.get('projectId')
   const [state, setState] = useState<LoadState>({ phase: 'loading' })
+
+  // Passed via navigate(..., { state }) from the dashboard's Run button — a one-time value from
+  // that specific /run call, not part of this page's normal data-fetch. Dismissible since it's
+  // only relevant right after landing here from a fresh Run.
+  const location = useLocation()
+  const [schemaWarning, setSchemaWarning] = useState<string | null>(
+    (location.state as { schemaWarning?: string | null } | null)?.schemaWarning ?? null,
+  )
 
   useEffect(() => {
     if (!projectId) return
@@ -118,6 +126,21 @@ export function ShowcasePage() {
       </header>
 
       <StatusLine status={showcase.status} isRunning={showcase.isRunning} />
+
+      {schemaWarning && (
+        <div className="showcase-panel showcase-panel--muted" style={{ borderColor: '#c9a227' }}>
+          <p style={{ margin: 0 }}>
+            <strong>No schema found:</strong> {schemaWarning}
+          </p>
+          <button
+            className="showcase-btn showcase-btn--secondary"
+            style={{ marginTop: '0.5rem' }}
+            onClick={() => setSchemaWarning(null)}
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
 
       <section className="showcase-body">
         <InterfaceSection showcase={showcase} experience={experience} uiSchema={uiSchema} />

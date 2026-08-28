@@ -167,14 +167,19 @@ public class DatabaseProvisionerService {
      * a project — never on a subsequent /run against an already-provisioned database, since
      * re-running CREATE TABLE against existing tables will fail. See RunController.
      *
+     * @return true if a schema script was found and executed, false if none was found (not an
+     *         error — most projects, especially Spring Boot ones using Flyway/JPA, won't have
+     *         one). Callers use this to warn the person when a database was provisioned but no
+     *         tables were ever created — see RunController's "schemaWarning" response field.
+     *
      * Statement splitting is a naive split on ';' — good enough for a straightforward DDL script,
      * but will break on semicolons inside string literals/complex statements. Not a full SQL
      * parser; keep schema.sql scripts simple (plain CREATE TABLE statements).
      */
-    public void runSchemaScriptIfPresent(String clonePath, DbCredentials credentials) {
+    public boolean runSchemaScriptIfPresent(String clonePath, DbCredentials credentials) {
         Path schemaScript = findSchemaScript(clonePath);
         if (schemaScript == null) {
-            return; // No schema.sql in the repo — nothing to do, not an error.
+            return false; // No schema.sql in the repo — nothing to do, not an error.
         }
 
         String sql;
@@ -203,6 +208,8 @@ public class DatabaseProvisionerService {
                     "Failed to run schema script (" + schemaScript.getFileName() + ") against database "
                             + credentials.dbName(), e);
         }
+
+        return true;
     }
 
     private Path findSchemaScript(String clonePath) {

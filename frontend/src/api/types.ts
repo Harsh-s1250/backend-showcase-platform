@@ -93,4 +93,7 @@ export interface RunResult {
   hostPort: number
   healthy: boolean
   url: string
+  // Only present right after a fresh database was provisioned with no schema.sql found in the
+  // repo — see DatabaseProvisionerService.runSchemaScriptIfPresent.
+  schemaWarning?: string
 }
