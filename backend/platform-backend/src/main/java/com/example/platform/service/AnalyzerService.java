@@ -37,6 +37,20 @@ public class AnalyzerService {
     private static final Pattern GRADLE_JAVA_VERSION_PATTERN =
             Pattern.compile("(?:sourceCompatibility|targetCompatibility)\\s*=?\\s*['\"]?(?:JavaVersion\\.VERSION_)?(\\d+(?:\\.\\d+)?)['\"]?");
 
+    // Strips // line comments and /* ... */ block comments (including Javadoc) before source
+    // signals are scanned. Without this, a comment merely mentioning an annotation name — e.g.
+    // Javadoc explaining "this class has no @RestController" — reads as real annotation usage,
+    // since the original scan was a plain content.contains(...) check with no awareness of
+    // comments at all. Best-effort regex, not a real Java lexer: a string literal containing
+    // "//" or "/*" could theoretically be stripped too, but that's a much rarer, lower-stakes
+    // false negative than the false positive this fixes.
+    private static final Pattern COMMENT_PATTERN =
+            Pattern.compile("/\\*.*?\\*/|//[^\\n]*", Pattern.DOTALL);
+
+    private String stripComments(String content) {
+        return COMMENT_PATTERN.matcher(content).replaceAll("");
+    }
+
     public AnalysisResult analyze(String clonePath) {
         Path repoRoot = Path.of(clonePath);
         File pomFile = repoRoot.resolve("pom.xml").toFile();
@@ -229,12 +243,14 @@ public class AnalyzerService {
                     .filter(p -> !p.toString().contains(File.separator + ".git" + File.separator))
                     .forEach(p -> {
                         anyJavaFiles[0] = true;
-                        String content;
+                        String rawContent;
                         try {
-                            content = Files.readString(p);
+                            rawContent = Files.readString(p);
                         } catch (IOException e) {
                             return; // unreadable file — skip, don't fail the whole analysis over it
                         }
+                        // Scan comment-stripped content only — see stripComments() for why.
+                        String content = stripComments(rawContent);
                         if (content.contains("@RestController")) restController[0] = true;
                         if (content.contains("@Controller")) controller[0] = true;
                         if (content.contains("public static void main")) mainMethod[0] = true;
@@ -266,18 +282,26 @@ public class AnalyzerService {
                     .filter(p -> !p.toString().contains(File.separator + "build" + File.separator))
                     .filter(p -> !p.toString().contains(File.separator + ".git" + File.separator))
                     .forEach(p -> {
-                        String content;
+                        String rawContent;
                         try {
-                            content = Files.readString(p);
+                            rawContent = Files.readString(p);
                         } catch (IOException e) {
                             return;
                         }
+                        // Scan comment-stripped content — see stripComments() for why (a comment
+                        // merely mentioning "public static void main" shouldn't count as a real
+                        // entrypoint any more than a comment mentioning an annotation name should
+                        // count as real annotation usage).
+                        String content = stripComments(rawContent);
                         if (!content.contains("public static void main")) return;
 
                         String fileName = p.getFileName().toString();
                         String className = fileName.substring(0, fileName.length() - ".java".length());
 
-                        Matcher packageMatcher = PACKAGE_PATTERN.matcher(content);
+                        // PACKAGE_PATTERN still runs against rawContent: stripping comments doesn't
+                        // change where the package declaration is, and there's no reason to redo the
+                        // regex against a second string when the original already works correctly here.
+                        Matcher packageMatcher = PACKAGE_PATTERN.matcher(rawContent);
                         String fqcn = packageMatcher.find()
                                 ? packageMatcher.group(1) + "." + className
                                 : className;
