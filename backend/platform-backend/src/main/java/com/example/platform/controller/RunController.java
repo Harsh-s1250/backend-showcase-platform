@@ -24,6 +24,23 @@ import com.example.platform.exception.ProjectNotFoundException;
 @RequestMapping("/api/projects")
 public class RunController {
 
+    // Chooses how /run and /restart decide "is this container ready," per project type.
+    // See RunService.HealthCheckStrategy for why UNSUPPORTED/UNKNOWN get NONE rather than
+    // reusing the console app's CONTAINER_STATE check (or falling through to HTTP) — neither
+    // check can honestly answer "ready" for a project with no REST interface and no console
+    // loop, and a project.getProjectTypeEnum() of null (never analyzed) is treated the same
+    // way as UNSUPPORTED/UNKNOWN here, since we equally can't assume it's REST or console.
+    private static com.example.platform.service.RunService.HealthCheckStrategy healthCheckStrategyFor(Project project) {
+        com.example.platform.analyzer.ProjectType type = project.getProjectTypeEnum();
+        if (type == com.example.platform.analyzer.ProjectType.REST_APPLICATION) {
+            return com.example.platform.service.RunService.HealthCheckStrategy.HTTP;
+        }
+        if (type == com.example.platform.analyzer.ProjectType.CONSOLE_APPLICATION) {
+            return com.example.platform.service.RunService.HealthCheckStrategy.CONTAINER_STATE;
+        }
+        return com.example.platform.service.RunService.HealthCheckStrategy.NONE;
+    }
+
     private final ProjectRepository projectRepository;
     private final RunService runService;
     private final DatabaseProvisionerService databaseProvisionerService;
@@ -95,7 +112,7 @@ public class RunController {
 
         RunService.RunResult result = runService.runContainer(
                 id, project.getDockerImageId(), dbCredentials,
-                project.getProjectTypeEnum() == com.example.platform.analyzer.ProjectType.CONSOLE_APPLICATION
+                healthCheckStrategyFor(project)
         );
 
         project.setContainerId(result.containerId());
@@ -154,7 +171,7 @@ public class RunController {
 
         RunService.RunResult result = runService.restartContainer(
                 id, project.getContainerId(), project.getHostPort(),
-                project.getProjectTypeEnum() == com.example.platform.analyzer.ProjectType.CONSOLE_APPLICATION
+                healthCheckStrategyFor(project)
         );
 
         project.setStatus(result.healthy() ? "RUNNING" : "RUN_UNHEALTHY");

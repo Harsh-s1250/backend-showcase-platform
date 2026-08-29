@@ -33,7 +33,7 @@ import java.util.function.Consumer;
  * hijacked HTTP connection, 8-byte multiplexed stdout/stderr framing since containers here
  * are created with tty=false — see RunService).
  */
-public class ConsoleAttachSession implements Closeable {
+public class ConsoleAttachSession implements AttachSession {
 
     private static final Logger log = LoggerFactory.getLogger(ConsoleAttachSession.class);
 

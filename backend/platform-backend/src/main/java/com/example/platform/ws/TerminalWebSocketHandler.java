@@ -4,7 +4,7 @@ import com.example.platform.analyzer.ProjectType;
 import com.example.platform.dto.TerminalMessage;
 import com.example.platform.entity.Project;
 import com.example.platform.repository.ProjectRepository;
-import com.example.platform.service.ConsoleAttachSession;
+import com.example.platform.service.AttachSession;
 import com.example.platform.service.RunService;
 import com.example.platform.service.TerminalSessionManager;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -47,7 +47,7 @@ public class TerminalWebSocketHandler extends TextWebSocketHandler {
     private final ScheduledExecutorService scheduler;
 
     private final Map<String, UUID> projectIdBySessionId = new ConcurrentHashMap<>();
-    private final Map<String, ConsoleAttachSession> attachBySessionId = new ConcurrentHashMap<>();
+    private final Map<String, AttachSession> attachBySessionId = new ConcurrentHashMap<>();
     private final Map<String, ScheduledFuture<?>> timeoutBySessionId = new ConcurrentHashMap<>();
     // Sending to the same WebSocketSession concurrently isn't safe (Spring's own docs say
     // so) — the attach callback thread and this handler's thread both write to it.
@@ -89,7 +89,7 @@ public class TerminalWebSocketHandler extends TextWebSocketHandler {
 
         projectIdBySessionId.put(session.getId(), projectId);
 
-        Optional<ConsoleAttachSession> acquired;
+        Optional<AttachSession> acquired;
         try {
             acquired = sessionManager.tryAcquire(
                     projectId,
@@ -127,7 +127,7 @@ public class TerminalWebSocketHandler extends TextWebSocketHandler {
         try {
             TerminalMessage parsed = objectMapper.readValue(message.getPayload(), TerminalMessage.class);
             if ("input".equals(parsed.type()) && parsed.data() != null) {
-                ConsoleAttachSession attach = attachBySessionId.get(session.getId());
+                AttachSession attach = attachBySessionId.get(session.getId());
                 if (attach != null) {
                     log.info("Forwarding {} bytes of terminal input to container", parsed.data().length());
                     attach.sendInput(parsed.data());

@@ -37,9 +37,26 @@ public class RunService {
 
     public record RunResult(String containerId, int hostPort, boolean healthy) {}
 
+    /**
+     * How to decide "is this container ready" — chosen per project type, since the three
+     * currently-classifiable types don't all offer the same signal to check:
+     *   - HTTP:            a REST app exposes a real HTTP server; poll it for a real response.
+     *   - CONTAINER_STATE: a console app has no HTTP server, only a running process — the best
+     *                       we can honestly say is "the process is still alive."
+     *   - NONE:             UNSUPPORTED/UNKNOWN projects (PRD Scenario C) have neither. Some don't
+     *                       even have a runnable main() at all, so a container-state check would
+     *                       just fail fast (crash-exit) and an HTTP check would fail slow (full
+     *                       timeout) — both would misreport an honestly-"no interface" project as
+     *                       an unhealthy/crashed one. NONE skips the check entirely and reports
+     *                       healthy immediately: we're not claiming the app "works," only that it
+     *                       was deployed, which is exactly the PRD's "Project deployed successfully
+     *                       / interactive interface not available for this project type" framing.
+     */
+    public enum HealthCheckStrategy { HTTP, CONTAINER_STATE, NONE }
+
     public RunResult runContainer(UUID projectId, String imageId,
                                     DatabaseProvisionerService.DbCredentials dbCredentials,
-                                    boolean interactive) {
+                                    HealthCheckStrategy healthCheckStrategy) {
         String containerName = "showcase-run-" + projectId;
 
         try {
@@ -63,11 +80,14 @@ public class RunService {
                 .withExposedPorts(containerPort)
                 .withHostConfig(hostConfig);
 
-        if (interactive) {
+        if (healthCheckStrategy != HealthCheckStrategy.HTTP) {
             // Keeps the container's stdin file descriptor open indefinitely (like `docker
             // run -i`) instead of it hitting EOF the instant the process starts — without
             // this, a console app's very first Scanner.nextInt()/readLine() would throw on
-            // startup, before any browser terminal ever gets a chance to attach.
+            // startup, before any browser terminal ever gets a chance to attach. Applied to
+            // NONE (UNSUPPORTED/UNKNOWN) too, not just CONTAINER_STATE (console) — harmless
+            // for a project that never reads stdin, and correct for the rarer case an
+            // UNSUPPORTED project does have a real main() that happens to read it.
             containerCmd.withStdinOpen(true).withTty(false);
         }
 
@@ -101,7 +121,11 @@ public class RunService {
         CreateContainerResponse container = containerCmd.exec();
         dockerClient.startContainerCmd(container.getId()).exec();
 
-        boolean healthy = interactive ? waitForContainerRunning(container.getId()) : waitForHealthy(hostPort);
+        boolean healthy = switch (healthCheckStrategy) {
+            case HTTP -> waitForHealthy(hostPort);
+            case CONTAINER_STATE -> waitForContainerRunning(container.getId());
+            case NONE -> true;
+        };
 
         return new RunResult(container.getId(), hostPort, healthy);
     }
@@ -200,7 +224,8 @@ public class RunService {
         }
     }
 
-    public RunResult restartContainer(UUID projectId, String containerId, int hostPort, boolean interactive) {
+    public RunResult restartContainer(UUID projectId, String containerId, int hostPort,
+                                        HealthCheckStrategy healthCheckStrategy) {
         try {
             dockerClient.startContainerCmd(containerId).exec();
         } catch (com.github.dockerjava.api.exception.NotModifiedException e) {
@@ -217,7 +242,11 @@ public class RunService {
         // read it back from the container's live NetworkSettings, which is only populated
         // while the container is actually running — if the container had exited, that came
         // back empty and threw a NoSuchElementException instead of a clean result.)
-        boolean healthy = interactive ? waitForContainerRunning(containerId) : waitForHealthy(hostPort);
+        boolean healthy = switch (healthCheckStrategy) {
+            case HTTP -> waitForHealthy(hostPort);
+            case CONTAINER_STATE -> waitForContainerRunning(containerId);
+            case NONE -> true;
+        };
         return new RunResult(containerId, hostPort, healthy);
     }
 }
